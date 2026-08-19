@@ -47,14 +47,10 @@ def stop(proc: subprocess.Popen[str]) -> None:
 
 
 def main() -> int:
-    subprocess.run(["open", "-a", "Calculator"], check=True)
-    subprocess.run(["open", "-a", "System Settings"], check=True)
-    import time
-    time.sleep(1.0)
     first = start("velacu-parallel-a")
     second = start("velacu-parallel-b")
     try:
-        first_bind = json.loads(text(call(first, 2, "velacu_bind", {"query": "计算器"})))
+        first_bind = json.loads(text(call(first, 2, "velacu_bind", {"query": "ChatGPT"})))
         second_bind = json.loads(text(call(second, 2, "velacu_bind", {"query": "系统设置"})))
         first_capture = call(first, 3, "velacu_capture", {})
         second_capture = call(second, 3, "velacu_capture", {})

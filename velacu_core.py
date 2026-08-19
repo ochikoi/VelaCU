@@ -55,11 +55,40 @@ class CuaClickBridge:
         self._preflight_done = False
         atexit.register(self.close)
 
+    def _ensure_host_post_event_access(self) -> None:
+        def probe(command: str) -> bool:
+            proc = subprocess.run(
+                [str(HELPER), command],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5.0,
+                check=False,
+            )
+            if proc.returncode != 0:
+                detail = proc.stderr.strip() or proc.stdout.strip() or f"helper exit {proc.returncode}"
+                raise VelaCUError(f"VelaCU host permission probe failed: {detail}")
+            try:
+                payload = json.loads(proc.stdout)
+            except json.JSONDecodeError as exc:
+                raise VelaCUError(f"VelaCU host permission probe returned invalid JSON: {proc.stdout[:200]!r}") from exc
+            return bool(payload.get("postEventAccess"))
+
+        if probe("permissions"):
+            return
+        if probe("request-post-access"):
+            return
+        raise VelaCUError(
+            "VelaCU host lacks macOS Accessibility/Post Event access. "
+            "Enable the VelaCU tunnel host in System Settings > Privacy & Security > Accessibility, then bind again."
+        )
+
     def preflight(self) -> None:
         if self._preflight_done and self._socket_is_live():
             return
         if not CUA_DRIVER.exists():
             raise VelaCUError(f"Cua Driver is not installed at {CUA_DRIVER}")
+        self._ensure_host_post_event_access()
         tools = subprocess.run(
             [str(CUA_DRIVER), "list-tools"],
             stdout=subprocess.PIPE,
@@ -93,11 +122,12 @@ class CuaClickBridge:
                     pass
                 env = os.environ.copy()
                 env["HOME"] = str(Path.home())
-                # This is already the private VelaCU child process. Skipping
-                # Cua's macOS responsibility re-exec keeps serve in this
-                # process group; without it the source-installed binary can
-                # re-exec through LaunchServices and never create our socket.
-                env["CUA_DRIVER_RS_RESPONSIBILITY_DISCLAIMED"] = "1"
+                # VelaCU embeds Cua as a private child of the tunnel-hosted MCP.
+                # Embedded mode preserves the stable host's macOS TCC identity and
+                # avoids a second responsibility re-exec that would detach the
+                # private Unix-socket lifecycle.
+                env["CUA_DRIVER_EMBEDDED"] = "1"
+                env["CUA_DRIVER_HOST_BUNDLE_ID"] = "io.openai.tunnel.velacu"
                 self._log_handle = self.log_path.open("ab")
                 self.daemon = subprocess.Popen(
                     [str(CUA_DRIVER), "serve", "--socket", str(self.socket), "--no-permissions-gate"],
@@ -309,6 +339,38 @@ def list_windows() -> list[dict[str, Any]]:
 
 def get_window(window_id: int) -> dict[str, Any]:
     return _run_json(["get", str(int(window_id))])
+
+
+def has_system_settings_remote_view(window: dict[str, Any]) -> bool:
+    """Return true when System Settings is hosting a same-frame app-extension pane.
+
+    macOS renders many right-hand settings panes in a separate app-extension
+    process whose CoreGraphics window has the same frame as the System Settings
+    host. PID-targeted events to either process can miss the RemoteView boundary;
+    these panes require a normal WindowServer HID hit-test instead.
+    """
+    if str(window.get("bundleID") or "") != "com.apple.systempreferences":
+        return False
+    x = float(window.get("x", 0.0))
+    y = float(window.get("y", 0.0))
+    width = float(window.get("width", 0.0))
+    height = float(window.get("height", 0.0))
+    host_pid = int(window.get("pid", 0))
+    host_id = int(window.get("windowID", 0))
+    for candidate in list_windows():
+        if int(candidate.get("windowID", 0)) == host_id or int(candidate.get("pid", 0)) == host_pid:
+            continue
+        bundle_id = str(candidate.get("bundleID") or "")
+        if not bundle_id.startswith("com.apple."):
+            continue
+        if (
+            abs(float(candidate.get("x", 0.0)) - x) <= 1.0
+            and abs(float(candidate.get("y", 0.0)) - y) <= 1.0
+            and abs(float(candidate.get("width", 0.0)) - width) <= 1.0
+            and abs(float(candidate.get("height", 0.0)) - height) <= 1.0
+        ):
+            return True
+    return False
 
 
 def choose_window(query: str | None = None, window_id: int | None = None) -> dict[str, Any]:
@@ -533,8 +595,6 @@ class VelaCUCore:
         app = str(window.get("bundlePath") or window.get("bundleID") or window.get("owner") or "").strip()
         if not app:
             raise VelaCUError("Could not resolve an app identifier for the selected window")
-        # Preflight the private pixel-only backend before a timed CU run starts.
-        self.cua.preflight()
         same_window = self.bound_window_id == int(window["windowID"]) and self.bound_app == app
         self.bound_window_id = int(window["windowID"])
         self.bound_app = app
@@ -575,6 +635,42 @@ class VelaCUCore:
             raise VelaCUError("button must be left, right, or middle")
         count = max(1, min(int(count), 4))
         self.bound_size = (float(window["width"]), float(window["height"]))
+
+        # System Settings hosts many right-hand panes in a same-frame app-extension
+        # RemoteView. PID-targeted background CGEvents reach the host/sidebar but
+        # not the embedded pane. For that one topology, use an untargeted HID hit
+        # test while briefly activating/restoring the host; coordinates stay exactly
+        # the same 0..10 window-local values and no AX/DOM lookup is involved.
+        if button == "left" and count == 1 and has_system_settings_remote_view(window):
+            permission = _run_json(["permissions"], timeout=3.0)
+            if not bool(permission.get("postEventAccess")):
+                raise VelaCUError("VelaCU host lacks CGPostEvent access for RemoteView click")
+            result = _run_json(
+                ["remoteview-click", str(int(window["windowID"])), f"{x:.1f}", f"{y:.1f}"],
+                timeout=5.0,
+            )
+            return {
+                "delivery": {"mode": "foreground-transient"},
+                "effect": "unverifiable",
+                "route": "global_hid_remoteview",
+                "cua_public_route": None,
+                "ax_used": False,
+                "physical_cursor_moved": False,
+                "virtual_cursor_visible": False,
+                "mode": "remoteview-pixel-only",
+                "normalizedX": x,
+                "normalizedY": y,
+                "windowLocalX": float(window["width"]) * x / 10.0,
+                "windowLocalY": float(window["height"]) * y / 10.0,
+                "windowWidth": float(window["width"]),
+                "windowHeight": float(window["height"]),
+                "cursorBeforeX": result.get("beforeX"),
+                "cursorBeforeY": result.get("beforeY"),
+                "cursorAfterX": result.get("afterX"),
+                "cursorAfterY": result.get("afterY"),
+            }
+
+        self.cua.preflight()
         return self.cua.click(
             pid=int(window["pid"]),
             window_id=int(window["windowID"]),

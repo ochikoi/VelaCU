@@ -1,7 +1,3 @@
-// Derived from Cua (https://github.com/trycua/cua), Copyright (c) 2025 Cua AI, Inc.
-// Cua is distributed under the MIT License; see third_party/CUA_LICENSE.md.
-// Modified by VelaCU to register only the minimal pixel-click/cursor surface.
-
 //! Minimal macOS tool surface used by VelaCU.
 //!
 //! This fork intentionally contains only:

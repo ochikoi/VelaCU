@@ -5,7 +5,6 @@ import base64
 import json
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -27,9 +26,6 @@ def send(proc: subprocess.Popen[str], obj: dict) -> dict:
 
 def main() -> int:
     query = sys.argv[1] if len(sys.argv) > 1 else "计算器"
-    if len(sys.argv) == 1:
-        subprocess.run(["open", "-a", "Calculator"], check=True)
-        time.sleep(0.8)
     proc = subprocess.Popen(
         [sys.executable, str(SERVER)],
         stdin=subprocess.PIPE,

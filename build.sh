@@ -17,20 +17,30 @@ swiftc "$ROOT/native/VelaCUHelper.swift" \
   -framework CoreGraphics \
   -framework AppKit
 
-STATUS_APP="$ROOT/bin/VelaCU Status.app"
-rm -rf "$STATUS_APP"
-mkdir -p "$STATUS_APP/Contents/MacOS" "$STATUS_APP/Contents/Resources"
-swiftc "$ROOT/native/VelaCUStatus.swift" \
-  -o "$STATUS_APP/Contents/MacOS/VelaCUStatus" \
-  -framework AppKit
-cp "$ROOT/native/VelaCUStatus-Info.plist" "$STATUS_APP/Contents/Info.plist"
-chmod +x "$STATUS_APP/Contents/MacOS/VelaCUStatus"
-
 if [[ ! -x "$ROOT/bin/velacu-cua-driver" || "${VELACU_REBUILD_CUA:-0}" == "1" ]]; then
   "$ROOT/scripts/build_cua_driver.sh"
 fi
 
 chmod +x "$ROOT/bin/VelaCUHelper" "$ROOT/bin/velacu-cua-driver"
+
+STATUS_APP="$ROOT/bin/VelaCU Status.app"
+rm -rf "$STATUS_APP"
+mkdir -p "$STATUS_APP/Contents/MacOS" "$STATUS_APP/Contents/Resources"
+test -f "$ROOT/resources/VelaCUPointerSource.png"
+swiftc "$ROOT/native/PreparePointerAsset.swift" \
+  -o "$ROOT/bin/PreparePointerAsset" \
+  -framework CoreGraphics \
+  -framework ImageIO
+cp "$ROOT/resources/VelaCUPointerSource.png" "$STATUS_APP/Contents/Resources/VelaCUPointerSource.png"
+"$ROOT/bin/PreparePointerAsset" \
+  "$STATUS_APP/Contents/Resources/VelaCUPointerSource.png" \
+  "$STATUS_APP/Contents/Resources/VelaCUPointer.png"
+rm -f "$ROOT/bin/PreparePointerAsset"
+swiftc "$ROOT/native/VelaCUStatus.swift" \
+  -o "$STATUS_APP/Contents/MacOS/VelaCUStatus" \
+  -framework AppKit
+cp "$ROOT/native/VelaCUStatus-Info.plist" "$STATUS_APP/Contents/Info.plist"
+chmod +x "$STATUS_APP/Contents/MacOS/VelaCUStatus"
 
 echo "Built VelaCU:"
 echo "  helper: $ROOT/bin/VelaCUHelper"

@@ -43,8 +43,6 @@ def save(result: dict, name: str) -> str:
 
 
 def main() -> int:
-    subprocess.run(["open", "-a", "System Settings"], check=True)
-    time.sleep(1.0)
     proc = subprocess.Popen([sys.executable, str(SERVER)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     try:
         send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "velacu-window-move", "version": "1"}}})
@@ -54,10 +52,10 @@ def main() -> int:
         before = next(item for item in before_list if item["window_id"] == window_id)
         before_image = save(call(proc, 4, "velacu_capture", {}), "velacu_move_before.png")
 
-        current_xy = (int(before["bounds"][0]), int(before["bounds"][1]))
-        target_xy = (160, 80) if current_xy == (260, 120) else (260, 120)
-        script = f'tell application "System Events" to tell process "System Settings" to set position of window 1 to {{{target_xy[0]}, {target_xy[1]}}}'
-        subprocess.run(["osascript", "-e", script], check=True, capture_output=True, text=True)
+        subprocess.run([
+            "osascript", "-e",
+            'tell application "System Events" to tell process "System Settings" to set position of window 1 to {260, 120}',
+        ], check=True, capture_output=True, text=True)
         time.sleep(0.7)
 
         after_list = json.loads(text(call(proc, 5, "velacu_list", {"limit": 50})))

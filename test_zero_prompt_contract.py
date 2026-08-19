@@ -4,7 +4,7 @@ from __future__ import annotations
 import unittest
 
 from velacu_core import MODEL_CAPTURE_WIDTH
-from velacu_mcp import TOOLS
+from velacu_mcp import TOOLS, handle
 
 
 class ZeroPromptContractTests(unittest.TestCase):
@@ -29,6 +29,20 @@ class ZeroPromptContractTests(unittest.TestCase):
         self.assertIn("0..10", description)
         self.assertIn("one decimal", description)
         self.assertIn("lower targets", description)
+
+    def test_click_schema_avoids_float_multiple_of_validation(self) -> None:
+        click = self.tool("velacu_click")
+        properties = click["inputSchema"]["properties"]
+        for axis in ("x", "y"):
+            self.assertNotIn("multipleOf", properties[axis])
+            self.assertEqual(properties[axis]["minimum"], 0)
+            self.assertEqual(properties[axis]["maximum"], 10)
+            self.assertIn("one decimal", properties[axis]["description"].lower())
+
+    def test_initialize_advertises_tool_list_changes(self) -> None:
+        response = handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}})
+        self.assertIsNotNone(response)
+        self.assertTrue(response["result"]["capabilities"]["tools"]["listChanged"])
 
 
 if __name__ == "__main__":

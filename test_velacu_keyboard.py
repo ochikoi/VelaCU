@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent
 SERVER = ROOT / "velacu_mcp.py"
 HELPER = ROOT / "bin" / "VelaCUHelper"
 RUNTIME = ROOT / "runtime"
-FILE_URL = (ROOT / "fixtures" / "keyboard_target.html").resolve().as_uri()
+FILE_URL = (ROOT / "fixtures" / "zero_prompt.html").resolve().as_uri()
 
 
 def send(proc: subprocess.Popen[str], request: dict) -> dict:
@@ -60,9 +60,7 @@ def timed(proc: subprocess.Popen[str], req_id: int, name: str, arguments: dict) 
 
 
 def main() -> int:
-    query = sys.argv[1] if len(sys.argv) > 1 else "VelaCU Keyboard Test"
-    subprocess.run(["open", "-a", "Safari", FILE_URL], check=True)
-    time.sleep(1.0)
+    query = sys.argv[1] if len(sys.argv) > 1 else "VelaCU Stopwatch"
     proc = subprocess.Popen(
         [sys.executable, str(SERVER)],
         stdin=subprocess.PIPE,

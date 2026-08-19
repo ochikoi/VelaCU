@@ -34,7 +34,7 @@ list -> bind -> capture -> click -> inspect returned screenshot -> repeat -> rel
 - click coordinates use one decimal place
 - window movement does not change the model-facing coordinate system
 
-`velacu_click` converts the normalized position using the target window's current bounds, sends a background pixel click, and returns a post-click screenshot in the same MCP call.
+`velacu_click` converts the normalized position using the target window's current bounds and returns a post-click screenshot in the same MCP call. Normal app windows use the background pixel-click route. Some cross-process macOS System Settings panes use a native compatibility fallback; VelaCU restores the previous app and cursor position immediately afterward.
 
 Keyboard input is handled separately by VelaCU's native macOS helper and supports normal shortcuts plus Unicode text.
 
@@ -47,7 +47,7 @@ VelaCU keeps the control path narrow:
 - fixed 640px model capture
 - no DOM targeting
 - no Accessibility/AX element targeting
-- no physical cursor movement for mouse clicks
+- background clicks do not take over the physical cursor; the System Settings compatibility fallback restores it immediately
 - a small visible agent cursor for feedback
 - independent runtime sessions for multiple MCP clients
 

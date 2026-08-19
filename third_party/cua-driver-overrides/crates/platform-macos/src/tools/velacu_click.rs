@@ -1,7 +1,3 @@
-// Derived from Cua (https://github.com/trycua/cua), Copyright (c) 2025 Cua AI, Inc.
-// Cua is distributed under the MIT License; see third_party/CUA_LICENSE.md.
-// Modified by VelaCU to expose only the window-local pixel XY background-click path.
-
 use async_trait::async_trait;
 use cua_driver_core::{
     action_record::{
@@ -16,6 +12,10 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use super::ToolState;
+
+extern "C" {
+    fn CGPreflightPostEventAccess() -> bool;
+}
 
 /// VelaCU's deliberately tiny last-mile executor.
 ///
@@ -99,6 +99,10 @@ impl Tool for VelaCuClickTool {
             Err(e) => return e,
         };
         let count = args.u64_or("count", 1).clamp(1, 2) as usize;
+        let post_event_access = unsafe { CGPreflightPostEventAccess() };
+        if !post_event_access {
+            return ToolResult::error("VelaCU Cua driver lacks CGPostEvent access");
+        }
 
         // Resolve only the live WindowServer frame. VelaCU already owns capture and
         // coordinate scaling, so this executor never captures the screen and never
@@ -149,7 +153,7 @@ impl Tool for VelaCuClickTool {
         );
 
         let result = tokio::task::spawn_blocking(move || {
-            crate::input::mouse::click_at_xy_chromium(
+            crate::input::mouse::click_at_xy_with_window_local(
                 pid,
                 screen_x,
                 screen_y,
@@ -170,6 +174,7 @@ impl Tool for VelaCuClickTool {
                     "ax_used": false,
                     "physical_cursor_moved": false,
                     "agent_cursor_visible": true,
+                    "post_event_access": post_event_access,
                     "activated_without_raise": activated,
                     "pid": pid,
                     "window_id": window_id,

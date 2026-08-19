@@ -5,7 +5,6 @@ import base64
 import json
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -39,9 +38,6 @@ def call(proc: subprocess.Popen[str], req_id: int, name: str, arguments: dict) -
 def main() -> int:
     # Defaults target Calculator's 9 key in the current scientific layout.
     query = sys.argv[1] if len(sys.argv) > 1 else "计算器"
-    if len(sys.argv) == 1:
-        subprocess.run(["open", "-a", "Calculator"], check=True)
-        time.sleep(0.8)
     x = float(sys.argv[2]) if len(sys.argv) > 2 else 8.45
     y = float(sys.argv[3]) if len(sys.argv) > 3 else 5.15
 

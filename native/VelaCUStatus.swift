@@ -32,15 +32,17 @@ final class PassThroughImageView: NSImageView {
 }
 
 final class StatusController: NSObject, NSApplicationDelegate {
-    private static let projectRoot: URL = {
-        // Bundle layout: <project>/bin/VelaCU Status.app. Keeping runtime
-        // relative to the bundle makes source checkouts and ~/.local installs
-        // work without embedding a developer-specific absolute path.
-        Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent()
+    // Resolve runtime relative to the installed app bundle instead of baking a
+    // developer-specific home/Desktop path into the executable. The status app
+    // lives at <VelaCU root>/bin/VelaCU Status.app.
+    private let root: URL = {
+        let projectRoot = Bundle.main.bundleURL
+            .deletingLastPathComponent() // bin
+            .deletingLastPathComponent() // VelaCU root
+        return projectRoot
+            .appendingPathComponent("runtime", isDirectory: true)
+            .appendingPathComponent("status", isDirectory: true)
     }()
-    private let root = StatusController.projectRoot
-        .appendingPathComponent("runtime", isDirectory: true)
-        .appendingPathComponent("status", isDirectory: true)
     private lazy var sessionsURL = root.appendingPathComponent("sessions", isDirectory: true)
     private lazy var commandsURL = root.appendingPathComponent("commands", isDirectory: true)
     private lazy var pidURL = root.appendingPathComponent("status-app.pid")
@@ -72,10 +74,8 @@ final class StatusController: NSObject, NSApplicationDelegate {
     private let startupGrace: TimeInterval = 0.8
     private var launchedAt = Date()
     private lazy var referencePointerImage: NSImage? = {
-        // Use the system cursor at runtime instead of shipping a screenshot or
-        // copied cursor artwork. This keeps the public source tree self-contained
-        // and lets macOS provide the appropriate native pointer asset.
-        let image = (NSCursor.arrow.image.copy() as? NSImage) ?? NSCursor.arrow.image
+        guard let path = Bundle.main.path(forResource: "VelaCUPointer", ofType: "png"),
+              let image = NSImage(contentsOfFile: path) else { return nil }
         image.isTemplate = false
         return image
     }()
@@ -553,9 +553,9 @@ final class StatusController: NSObject, NSApplicationDelegate {
     }
 
     private func drawCursor(in rect: NSRect) {
-        // Draw the native macOS arrow supplied by NSCursor. The App icon and
-        // pointer remain separate animation layers, so App switching never moves
-        // or scales the pointer.
+        // Use the user's supplied reference pointer. The build step only
+        // crops it and removes the near-white JPEG background; no redraw,
+        // recolor, outline, shadow, SF Symbol, or NSCursor is involved here.
         guard let pointer = referencePointerImage else { return }
         let natural = pointer.size
         guard natural.width > 0, natural.height > 0 else { return }

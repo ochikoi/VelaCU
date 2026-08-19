@@ -124,9 +124,62 @@ func postGlobalMouse(window: WindowInfo, normalizedX: Double, normalizedY: Doubl
     tagTargetWindow(down, windowID: window.windowID, pid: window.pid)
     tagTargetWindow(up, windowID: window.windowID, pid: window.pid)
     down.post(tap: .cghidEventTap)
-    usleep(25_000)
+    usleep(28_000)
     up.post(tap: .cghidEventTap)
     usleep(45_000)
+}
+
+// System Settings and a few other macOS hosts embed their right-hand panes as
+// RemoteView/app-extension processes. A PID-targeted CGEvent sent to the host or
+// the extension is not equivalent to a real mouse hit-test. For those panes we
+// deliberately post an *untargeted* HID event at the same screen point so
+// WindowServer performs the normal hit-test across the embedded process boundary.
+// The frontmost application and physical cursor position are restored afterwards.
+func remoteViewClick(window: WindowInfo, normalizedX: Double, normalizedY: Double) throws -> [String: Double] {
+    guard (0...10).contains(normalizedX), (0...10).contains(normalizedY) else {
+        throw NSError(domain: "VelaCU", code: 27, userInfo: [NSLocalizedDescriptionKey: "x/y must be in 0...10"])
+    }
+    let point = CGPoint(
+        x: window.x + window.width * normalizedX / 10.0,
+        y: window.y + window.height * normalizedY / 10.0
+    )
+    let before = cursorPosition()
+    let previousPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
+
+    if previousPID != window.pid, let target = NSRunningApplication(processIdentifier: pid_t(window.pid)) {
+        _ = target.activate(options: [.activateAllWindows])
+        usleep(90_000)
+    }
+
+    let source = CGEventSource(stateID: .combinedSessionState)
+    guard
+        let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
+        let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)
+    else { throw NSError(domain: "VelaCU", code: 28, userInfo: [NSLocalizedDescriptionKey: "Could not create RemoteView mouse event"]) }
+    down.setIntegerValueField(.mouseEventClickState, value: 1)
+    up.setIntegerValueField(.mouseEventClickState, value: 1)
+    down.post(tap: .cghidEventTap)
+    usleep(28_000)
+    up.post(tap: .cghidEventTap)
+    usleep(45_000)
+
+    CGWarpMouseCursorPosition(before)
+    usleep(10_000)
+    if previousPID > 0, previousPID != window.pid,
+       let previous = NSRunningApplication(processIdentifier: previousPID) {
+        _ = previous.activate(options: [.activateAllWindows])
+    }
+    let after = cursorPosition()
+    return [
+        "beforeX": before.x,
+        "beforeY": before.y,
+        "afterX": after.x,
+        "afterY": after.y,
+        "previousPID": Double(previousPID),
+        "targetPID": Double(window.pid),
+        "globalX": point.x,
+        "globalY": point.y,
+    ]
 }
 
 func focusClick(window: WindowInfo, normalizedX: Double, normalizedY: Double) throws -> [String: Double] {
@@ -381,6 +434,17 @@ do {
             throw NSError(domain: "VelaCU", code: 15, userInfo: [NSLocalizedDescriptionKey: "Usage: focus-click WINDOW_ID X Y"])
         }
         try emitJSON(focusClick(window: window, normalizedX: nx, normalizedY: ny))
+
+    case "remoteview-click":
+        guard args.count >= 5,
+              let id = UInt32(args[2]),
+              let nx = Double(args[3]),
+              let ny = Double(args[4]),
+              let window = windowByID(id)
+        else {
+            throw NSError(domain: "VelaCU", code: 29, userInfo: [NSLocalizedDescriptionKey: "Usage: remoteview-click WINDOW_ID X Y"])
+        }
+        try emitJSON(remoteViewClick(window: window, normalizedX: nx, normalizedY: ny))
 
     case "cursor":
         let p = cursorPosition()

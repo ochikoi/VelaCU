@@ -74,8 +74,8 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "x": {"type": "number", "minimum": 0, "maximum": 10, "multipleOf": 0.1},
-                "y": {"type": "number", "minimum": 0, "maximum": 10, "multipleOf": 0.1},
+                "x": {"type": "number", "minimum": 0, "maximum": 10, "description": "0..10 window-local x coordinate. Supply one decimal place (0.1 steps)."},
+                "y": {"type": "number", "minimum": 0, "maximum": 10, "description": "0..10 window-local y coordinate. Supply one decimal place (0.1 steps)."},
                 "button": {"type": "string", "enum": ["left"], "default": "left"},
                 "count": {"type": "integer", "minimum": 1, "maximum": 2, "default": 1},
             },
@@ -246,7 +246,7 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
             "id": req_id,
             "result": {
                 "protocolVersion": requested or PROTOCOL_VERSION,
-                "capabilities": {"tools": {"listChanged": False}},
+                "capabilities": {"tools": {"listChanged": True}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 "instructions": "VelaCU is a small visual window-control tool. Typical flow: velacu_list -> velacu_bind -> velacu_capture -> velacu_click/key/type -> inspect the returned screenshot -> repeat -> velacu_release. Capture width is fixed at 640px. For clicks, read the visible 0..10 ruler directly: origin top-left, x increases right, y increases down; targets near the bottom have y near 10. Use one decimal place only. Never calculate pixels, use AX/DOM, emit bash/osascript/System Events/clipboard input, or use an official Computer Use path.",
             },
@@ -308,6 +308,10 @@ def main() -> int:
                 response = handle(msg)
                 if response is not None:
                     sys.stdout.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
+                    sys.stdout.flush()
+                if msg.get("method") == "notifications/initialized":
+                    notification = {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}
+                    sys.stdout.write(json.dumps(notification, ensure_ascii=False, separators=(",", ":")) + "\n")
                     sys.stdout.flush()
             except Exception as exc:
                 sys.stderr.write(f"VelaCU MCP error: {exc}\n")

@@ -18,7 +18,7 @@ mkdir -p "$STAGE/bin"
 for file in install.sh build.sh velacu_core.py velacu_mcp.py status_publisher.py velacu_cli.py requirements.txt README.md LICENSE THIRD_PARTY_NOTICES.md codex-mcp.example.toml generic-mcp.example.json; do
   cp "$ROOT/$file" "$STAGE/$file"
 done
-for dir in native scripts third_party fixtures; do
+for dir in native scripts third_party fixtures resources; do
   cp -R "$ROOT/$dir" "$STAGE/$dir"
 done
 cp "$ROOT/bin/VelaCUHelper" "$STAGE/bin/VelaCUHelper"

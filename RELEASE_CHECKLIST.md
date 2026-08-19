@@ -1,6 +1,6 @@
 # Release checklist
 
-This working copy is prepared for open source but is intentionally **not published yet**.
+This working copy is prepared as the first public VelaCU release candidate.
 
 Before the first public release:
 
@@ -18,8 +18,8 @@ Before the first public release:
 - [x] Keep model-facing capture width fixed at 640px.
 - [x] Verify a fresh Codex session can use VelaCU without separate coordinate coaching.
 - [x] Verify pointer position does not shift between menu-bar animation and resting state.
-- [ ] Choose the final GitHub owner/repository URL.
-- [ ] Decide whether the first public release ships prebuilt arm64 binaries, source-only, or both.
+- [x] Use `ochikoi/VelaCU` as the GitHub owner/repository.
+- [x] Ship both the source archive and the prebuilt macOS arm64 archive for the first release.
 - [ ] Test/build an Intel/x86_64 package before claiming Intel support.
 - [ ] Record the short VelaCU dogfooding demo for the repository page.
 - [ ] Publish the repository.
