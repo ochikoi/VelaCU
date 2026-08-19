@@ -1,0 +1,8 @@
+# Usually you do not need to edit this by hand.
+# Run: velacu setup codex
+#
+# Manual equivalent after the default install:
+[mcp_servers.velacu]
+command = "/Users/YOU/.local/bin/velacu"
+args = ["mcp"]
+startup_timeout_sec = 30

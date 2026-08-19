@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "velacu": {
+      "command": "/Users/YOU/.local/bin/velacu",
+      "args": ["mcp"]
+    }
+  }
+}
