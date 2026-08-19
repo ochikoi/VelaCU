@@ -18,7 +18,7 @@ Before the first public release:
 - [x] Keep model-facing capture width fixed at 640px.
 - [x] Verify a fresh Codex session can use VelaCU without separate coordinate coaching.
 - [x] Verify pointer position does not shift between menu-bar animation and resting state.
-- [x] Use `ochikoi/VelaCU` as the GitHub owner/repository.
+- [x] Configure the final GitHub owner/repository.
 - [x] Ship both the source archive and the prebuilt macOS arm64 archive for the first release.
 - [ ] Test/build an Intel/x86_64 package before claiming Intel support.
 - [ ] Record the short VelaCU dogfooding demo for the repository page.
