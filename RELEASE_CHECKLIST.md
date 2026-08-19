@@ -22,7 +22,7 @@ Before the first public release:
 - [x] Ship both the source archive and the prebuilt macOS arm64 archive for the first release.
 - [ ] Test/build an Intel/x86_64 package before claiming Intel support.
 - [ ] Record the short VelaCU dogfooding demo for the repository page.
-- [ ] Publish the repository.
-- [ ] Create the first GitHub release and attach the packaged archive + SHA-256 file.
+- [x] Publish the repository.
+- [x] Create the first GitHub release and attach the packaged archive + SHA-256 file.
 
 Do not publish automatically from this directory; final publication should be an explicit user action.
