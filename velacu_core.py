@@ -27,8 +27,8 @@ POINTER_HELPER = ROOT / "bin" / "VelaPointer"
 DEFAULT_POINTER_IMAGE = ROOT / "resources" / "VelaCUPointer.png"
 STATUS_PUBLISHER = ROOT / "status_publisher.py"
 STATUS_COMMANDS = RUNTIME / "status" / "commands"
-VELACU_VERSION = "0.4.1"
-VELACU_BUILD = "native-20260820-04"
+VELACU_VERSION = "0.4.2"
+VELACU_BUILD = "native-20260820-05"
 MODEL_CAPTURE_WIDTH = 640
 
 

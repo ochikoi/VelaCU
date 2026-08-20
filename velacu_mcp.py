@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -337,8 +339,47 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _parent_transport_alive(initial_parent_pid: int) -> bool:
+    """Return False once this MCP process has lost its original transport parent."""
+    if initial_parent_pid <= 1:
+        return True
+    if os.getppid() != initial_parent_pid:
+        return False
+    try:
+        os.kill(initial_parent_pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _start_parent_watchdog(initial_parent_pid: int, interval: float = 0.5) -> threading.Thread | None:
+    """Terminate through the normal SIGTERM cleanup path if the transport parent dies."""
+    if initial_parent_pid <= 1:
+        return None
+
+    def watch() -> None:
+        while True:
+            time.sleep(interval)
+            if _parent_transport_alive(initial_parent_pid):
+                continue
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            return
+
+    thread = threading.Thread(target=watch, name="velacu-parent-watchdog", daemon=True)
+    thread.start()
+    return thread
+
+
 def main() -> int:
-    # MCP stdio transport: one JSON-RPC object per line.
+    # MCP stdio transport: one JSON-RPC object per line. The parent watchdog is
+    # deliberately independent of stdin: some tunnel/client failure modes leave
+    # the pipe open after the transport process has died and macOS reparents this
+    # server to PID 1. Without this guard such a server can survive indefinitely.
     def shutdown(signum: int, _frame: Any) -> None:
         try:
             core.release()
@@ -347,6 +388,7 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
+    _start_parent_watchdog(os.getppid())
     try:
         for line in sys.stdin:
             line = line.strip()

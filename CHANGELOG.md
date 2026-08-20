@@ -1,5 +1,10 @@
 # Changelog
 
+## VelaCU v0.4.2 — 2026-08-20
+
+- Fixed an MCP lifecycle leak where VelaCU could survive as a PID 1 orphan if its tunnel/transport parent disappeared while stdin was still held open. The server now watches its original parent and exits through the normal `core.release()` cleanup path when that parent is lost, preventing stale sessions and a stuck menu-bar status icon.
+- Added a regression test that keeps stdin open while the original transport parent exits, reproducing the exact orphan-process failure mode.
+
 ## VelaCU v0.4.1 — 2026-08-20
 
 - Added standalone VelaClick v0.3.0 SkyLight click delivery.

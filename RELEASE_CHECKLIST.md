@@ -1,6 +1,6 @@
 # Release checklist
 
-VelaCU v0.4.1 release preparation:
+VelaCU v0.4.2 release preparation:
 
 - [x] Remove developer-specific absolute paths.
 - [x] Remove runtime screenshots, sockets, logs, caches, and local archives from the source tree.
@@ -12,6 +12,7 @@ VelaCU v0.4.1 release preparation:
 - [x] Include the verified pointer flicker, minimize, idle hover, and contrast fixes.
 - [x] Validate the source install path without Rust/cargo.
 - [x] Run build and compatible Python regression/contract tests.
+- [x] Add and pass the transport-parent lifecycle regression test.
 - [ ] Test/build an Intel/x86_64 package before claiming Intel support.
 - [ ] Publish a GitHub release explicitly after the commit is pushed.
 

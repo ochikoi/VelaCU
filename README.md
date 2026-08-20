@@ -4,8 +4,8 @@ VelaCU is a small macOS visual Computer Use MCP server. It gives an MCP-capable 
 
 VelaCU can be used with WebGPT, Codex, and other MCP-capable agents.
 
-Release: **VelaCU v0.4.1**
-Build: **native-20260820-04**
+Release: **VelaCU v0.4.2**
+Build: **native-20260820-05**
 Click backend: **VelaClick v0.3.0 SkyLight**
 
 ## Eight MCP tools
