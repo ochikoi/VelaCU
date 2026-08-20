@@ -14,6 +14,6 @@ VelaCU v0.4.2 release preparation:
 - [x] Run build and compatible Python regression/contract tests.
 - [x] Add and pass the transport-parent lifecycle regression test.
 - [ ] Test/build an Intel/x86_64 package before claiming Intel support.
-- [ ] Publish a GitHub release explicitly after the commit is pushed.
+- [x] Publish a GitHub release explicitly after the commit is pushed.
 
 Do not publish a GitHub release or tag automatically from this directory.
