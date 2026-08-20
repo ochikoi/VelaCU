@@ -33,7 +33,7 @@ for path in src.rglob('*'):
     shutil.copy2(path, target)
 PY
 
-chmod +x "$STAGE/install.sh" "$STAGE/build.sh" "$STAGE/scripts/build_cua_driver.sh" "$STAGE/scripts/package_release.sh" "$STAGE/scripts/package_source.sh" || true
+chmod +x "$STAGE/install.sh" "$STAGE/build.sh" "$STAGE/scripts/package_release.sh" "$STAGE/scripts/package_source.sh" || true
 python3 "$STAGE/scripts/verify_source_tree.py"
 
 (

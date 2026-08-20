@@ -21,8 +21,8 @@ Options:
   -h, --help            Show this help.
 
 A release archive can include prebuilt macOS binaries, so installation normally
-needs only Python. A plain source checkout builds native pieces locally and may
-also need Xcode Command Line Tools and Rust/cargo.
+needs only Python and Pillow. A plain source checkout builds the small native
+macOS helpers locally and needs Xcode Command Line Tools.
 
 The installer never removes unrelated Codex MCP servers. Before changing Codex,
 VelaCU creates a timestamped backup of ~/.codex/config.toml.
@@ -34,7 +34,7 @@ while (( $# > 0 )); do
     --target) TARGET="$2"; shift 2 ;;
     --prefix) INSTALL_ROOT="$2"; shift 2 ;;
     --bin-dir) BIN_DIR="$2"; shift 2 ;;
-    --rebuild|--rebuild-driver) FORCE_REBUILD=1; shift ;;
+    --rebuild) FORCE_REBUILD=1; shift ;;
     --python) PYTHON_BIN="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -49,17 +49,14 @@ done
 PREBUILT_READY=0
 if [[ $FORCE_REBUILD -eq 0 \
    && -x "$SOURCE/bin/VelaCUHelper" \
-   && -x "$SOURCE/bin/velacu-cua-driver" \
+   && -x "$SOURCE/bin/VelaClick" \
+   && -x "$SOURCE/bin/VelaPointer" \
    && -x "$SOURCE/bin/VelaCU Status.app/Contents/MacOS/VelaCUStatus" ]]; then
   PREBUILT_READY=1
 fi
 
 if [[ $PREBUILT_READY -eq 0 ]]; then
   command -v swiftc >/dev/null 2>&1 || { echo "error: swiftc is missing. Run: xcode-select --install" >&2; exit 2; }
-  if [[ ! -x "$SOURCE/bin/velacu-cua-driver" || $FORCE_REBUILD -eq 1 ]]; then
-    command -v cargo >/dev/null 2>&1 || { echo "error: cargo is required for a source build. Install Rust from https://rustup.rs" >&2; exit 2; }
-    command -v git >/dev/null 2>&1 || { echo "error: git is required for a source build" >&2; exit 2; }
-  fi
 fi
 
 INSTALL_ROOT="${INSTALL_ROOT:A}"
@@ -85,27 +82,21 @@ restore_on_error() {
 trap restore_on_error EXIT
 
 mkdir -p "$INSTALL_ROOT"
-for file in velacu_core.py velacu_mcp.py status_publisher.py velacu_cli.py build.sh requirements.txt LICENSE THIRD_PARTY_NOTICES.md README.md; do
+for file in velacu_core.py velacu_mcp.py status_publisher.py velacu_cli.py build.sh requirements.txt LICENSE THIRD_PARTY_NOTICES.md README.md CHANGELOG.md; do
   cp "$SOURCE/$file" "$INSTALL_ROOT/$file"
 done
-for dir in native scripts third_party fixtures; do
+for dir in native scripts fixtures resources; do
   cp -R "$SOURCE/$dir" "$INSTALL_ROOT/$dir"
 done
-chmod +x "$INSTALL_ROOT/build.sh" "$INSTALL_ROOT/scripts/build_cua_driver.sh"
+chmod +x "$INSTALL_ROOT/build.sh" "$INSTALL_ROOT/scripts/package_release.sh" "$INSTALL_ROOT/scripts/package_source.sh"
 
+mkdir -p "$INSTALL_ROOT/bin"
 if [[ $PREBUILT_READY -eq 1 ]]; then
-  mkdir -p "$INSTALL_ROOT/bin"
-  cp "$SOURCE/bin/VelaCUHelper" "$INSTALL_ROOT/bin/VelaCUHelper"
-  cp "$SOURCE/bin/velacu-cua-driver" "$INSTALL_ROOT/bin/velacu-cua-driver"
+  for file in VelaCUHelper VelaClick VelaPointer; do
+    cp "$SOURCE/bin/$file" "$INSTALL_ROOT/bin/$file"
+  done
   cp -R "$SOURCE/bin/VelaCU Status.app" "$INSTALL_ROOT/bin/VelaCU Status.app"
-  chmod +x "$INSTALL_ROOT/bin/VelaCUHelper" "$INSTALL_ROOT/bin/velacu-cua-driver" "$INSTALL_ROOT/bin/VelaCU Status.app/Contents/MacOS/VelaCUStatus"
-else
-  # Reuse a driver present in a source checkout unless a full rebuild was asked for.
-  if [[ -x "$SOURCE/bin/velacu-cua-driver" && $FORCE_REBUILD -eq 0 ]]; then
-    mkdir -p "$INSTALL_ROOT/bin"
-    cp "$SOURCE/bin/velacu-cua-driver" "$INSTALL_ROOT/bin/velacu-cua-driver"
-    chmod +x "$INSTALL_ROOT/bin/velacu-cua-driver"
-  fi
+  chmod +x "$INSTALL_ROOT/bin/VelaCUHelper" "$INSTALL_ROOT/bin/VelaClick" "$INSTALL_ROOT/bin/VelaPointer" "$INSTALL_ROOT/bin/VelaCU Status.app/Contents/MacOS/VelaCUStatus"
 fi
 
 "$PYTHON_BIN" -m venv "$INSTALL_ROOT/.venv"
@@ -114,9 +105,7 @@ fi
 if [[ $PREBUILT_READY -eq 0 ]]; then
   (
     cd "$INSTALL_ROOT"
-    PYTHON="$INSTALL_ROOT/.venv/bin/python" \
-    VELACU_REBUILD_CUA="$FORCE_REBUILD" \
-    ./build.sh
+    PYTHON="$INSTALL_ROOT/.venv/bin/python" ./build.sh
   )
 fi
 

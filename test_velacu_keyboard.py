@@ -81,7 +81,7 @@ def main() -> int:
         listed = call(proc, req_id, "velacu_list", {"limit": 50})
         req_id += 1
         tool_names = [tool["name"] for tool in init["result"].get("capabilities", {}).get("tools", {})] if False else None
-        expected = {"velacu_list", "velacu_bind", "velacu_capture", "velacu_click", "velacu_key", "velacu_type", "velacu_release"}
+        expected = {"velacu_list", "velacu_bind", "velacu_capture", "velacu_click", "velacu_scroll", "velacu_key", "velacu_type", "velacu_release"}
         tools_response = send(proc, {"jsonrpc": "2.0", "id": req_id, "method": "tools/list", "params": {}})
         req_id += 1
         names = {tool["name"] for tool in tools_response["result"]["tools"]}

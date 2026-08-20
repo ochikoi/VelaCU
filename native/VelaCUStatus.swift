@@ -1,10 +1,12 @@
 import AppKit
+import CoreGraphics
 import Darwin
 
 struct SessionState: Codable {
     let active: Bool
     let serverPID: Int32
     let targetPID: Int32
+    let windowID: UInt32?
     let bundleID: String
     let bundlePath: String
     let owner: String
@@ -16,6 +18,7 @@ struct SessionState: Codable {
         case active
         case serverPID = "server_pid"
         case targetPID = "target_pid"
+        case windowID = "window_id"
         case bundleID = "bundle_id"
         case bundlePath = "bundle_path"
         case owner
@@ -128,9 +131,39 @@ final class StatusController: NSObject, NSApplicationDelegate {
                 try? FileManager.default.removeItem(at: file)
                 continue
             }
+            guard let windowID = state.windowID else {
+                // Legacy status records predate window-scoped lifecycle tracking.
+                // They cannot prove which live window is controlled, so retire them.
+                requestRelease(state)
+                try? FileManager.default.removeItem(at: file)
+                continue
+            }
+            if !windowExists(windowID) {
+                requestRelease(state)
+                try? FileManager.default.removeItem(at: file)
+                continue
+            }
             states.append(state)
         }
         return states.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func windowExists(_ windowID: UInt32) -> Bool {
+        guard let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+            // Fail open if WindowServer cannot answer; never tear down a healthy session on query failure.
+            return true
+        }
+        return windows.contains { item in
+            (item[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID
+        }
+    }
+
+    private func requestRelease(_ state: SessionState) {
+        let command = commandsURL.appendingPathComponent("\(state.sessionID).release")
+        let temp = commandsURL.appendingPathComponent(".\(state.sessionID).\(getpid()).tmp")
+        try? Data("release\n".utf8).write(to: temp, options: .atomic)
+        try? FileManager.default.removeItem(at: command)
+        try? FileManager.default.moveItem(at: temp, to: command)
     }
 
     private func processIsAlive(_ pid: Int32) -> Bool {

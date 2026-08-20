@@ -13,9 +13,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.0</string>
+	<string>0.4.1</string>
 	<key>CFBundleVersion</key>
-	<string>canonical-20260818-01</string>
+	<string>native-20260820-04</string>
 	<key>LSUIElement</key>
 	<true/>
 </dict>

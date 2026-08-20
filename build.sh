@@ -10,18 +10,24 @@ command -v swiftc >/dev/null 2>&1 || { echo "error: swiftc not found. Install Xc
   exit 2
 }
 
-mkdir -p "$ROOT/bin" "$ROOT/runtime/status/sessions" "$ROOT/runtime/status/commands"
+mkdir -p "$ROOT/bin" "$ROOT/resources" "$ROOT/runtime/status/sessions" "$ROOT/runtime/status/commands"
 
 swiftc "$ROOT/native/VelaCUHelper.swift" \
   -o "$ROOT/bin/VelaCUHelper" \
   -framework CoreGraphics \
   -framework AppKit
 
-if [[ ! -x "$ROOT/bin/velacu-cua-driver" || "${VELACU_REBUILD_CUA:-0}" == "1" ]]; then
-  "$ROOT/scripts/build_cua_driver.sh"
-fi
+swiftc -parse-as-library "$ROOT/native/VelaClick.swift" \
+  -o "$ROOT/bin/VelaClick" \
+  -framework CoreGraphics \
+  -framework AppKit
 
-chmod +x "$ROOT/bin/VelaCUHelper" "$ROOT/bin/velacu-cua-driver"
+swiftc "$ROOT/native/VelaPointer.swift" \
+  -o "$ROOT/bin/VelaPointer" \
+  -framework AppKit \
+  -framework CoreGraphics
+
+chmod +x "$ROOT/bin/VelaCUHelper" "$ROOT/bin/VelaClick" "$ROOT/bin/VelaPointer"
 
 STATUS_APP="$ROOT/bin/VelaCU Status.app"
 rm -rf "$STATUS_APP"
@@ -31,19 +37,19 @@ swiftc "$ROOT/native/PreparePointerAsset.swift" \
   -o "$ROOT/bin/PreparePointerAsset" \
   -framework CoreGraphics \
   -framework ImageIO
-cp "$ROOT/resources/VelaCUPointerSource.png" "$STATUS_APP/Contents/Resources/VelaCUPointerSource.png"
 "$ROOT/bin/PreparePointerAsset" \
-  "$STATUS_APP/Contents/Resources/VelaCUPointerSource.png" \
-  "$STATUS_APP/Contents/Resources/VelaCUPointer.png"
+  "$ROOT/resources/VelaCUPointerSource.png" \
+  "$ROOT/resources/VelaCUPointer.png"
+cp "$ROOT/resources/VelaCUPointerSource.png" "$STATUS_APP/Contents/Resources/VelaCUPointerSource.png"
+cp "$ROOT/resources/VelaCUPointer.png" "$STATUS_APP/Contents/Resources/VelaCUPointer.png"
 rm -f "$ROOT/bin/PreparePointerAsset"
-swiftc "$ROOT/native/VelaCUStatus.swift" \
-  -o "$STATUS_APP/Contents/MacOS/VelaCUStatus" \
-  -framework AppKit
+swiftc "$ROOT/native/VelaCUStatus.swift"   -o "$STATUS_APP/Contents/MacOS/VelaCUStatus"   -framework AppKit
 cp "$ROOT/native/VelaCUStatus-Info.plist" "$STATUS_APP/Contents/Info.plist"
 chmod +x "$STATUS_APP/Contents/MacOS/VelaCUStatus"
 
 echo "Built VelaCU:"
-echo "  helper: $ROOT/bin/VelaCUHelper"
-echo "  driver: $ROOT/bin/velacu-cua-driver"
-echo "  status: $STATUS_APP"
-echo "  MCP:    $PYTHON $ROOT/velacu_mcp.py"
+echo "  helper:  $ROOT/bin/VelaCUHelper"
+echo "  click:   $ROOT/bin/VelaClick (VelaClick 0.3.0 SkyLight)"
+echo "  pointer: $ROOT/bin/VelaPointer"
+echo "  status:  $STATUS_APP"
+echo "  MCP:     $PYTHON $ROOT/velacu_mcp.py"

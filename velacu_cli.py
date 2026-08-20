@@ -15,7 +15,8 @@ from velacu_core import VELACU_BUILD, VELACU_VERSION
 
 ROOT = Path(__file__).resolve().parent
 HELPER = ROOT / "bin" / "VelaCUHelper"
-DRIVER = ROOT / "bin" / "velacu-cua-driver"
+VELACLICK = ROOT / "bin" / "VelaClick"
+POINTER = ROOT / "bin" / "VelaPointer"
 STATUS_EXEC = ROOT / "bin" / "VelaCU Status.app" / "Contents" / "MacOS" / "VelaCUStatus"
 MCP = ROOT / "velacu_mcp.py"
 
@@ -98,17 +99,10 @@ def doctor() -> int:
     except Exception as exc:
         checks.append(("Pillow", False, str(exc), True))
     checks.append(("VelaCUHelper", HELPER.is_file() and os.access(HELPER, os.X_OK), str(HELPER), True))
-    checks.append(("VelaCU driver", DRIVER.is_file() and os.access(DRIVER, os.X_OK), str(DRIVER), True))
+    checks.append(("VelaClick", VELACLICK.is_file() and os.access(VELACLICK, os.X_OK), str(VELACLICK), True))
+    checks.append(("VelaPointer", POINTER.is_file() and os.access(POINTER, os.X_OK), str(POINTER), True))
     checks.append(("Status app", STATUS_EXEC.is_file() and os.access(STATUS_EXEC, os.X_OK), str(STATUS_EXEC), True))
     checks.append(("screencapture", Path("/usr/sbin/screencapture").exists(), "/usr/sbin/screencapture", True))
-
-    if DRIVER.is_file() and os.access(DRIVER, os.X_OK):
-        try:
-            probe = subprocess.run([str(DRIVER), "list-tools"], text=True, capture_output=True, timeout=5, check=False)
-            ok = probe.returncode == 0 and "click: Pure XY background click for VelaCU" in probe.stdout
-            checks.append(("pixel-only driver surface", ok, "VelaCU click tool" if ok else (probe.stderr.strip() or "unexpected tool surface"), True))
-        except Exception as exc:
-            checks.append(("pixel-only driver surface", False, str(exc), True))
 
     if HELPER.is_file() and os.access(HELPER, os.X_OK):
         try:

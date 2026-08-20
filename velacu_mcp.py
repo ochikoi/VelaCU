@@ -70,7 +70,7 @@ TOOLS = [
     },
     {
         "name": "velacu_click",
-        "description": "Click the bound window using only the visible 0..10 window-local ruler, then immediately return a fixed-640px post-click screenshot. Origin is top-left; x increases right and y increases down, so lower targets have larger y values. Use exactly one decimal place and never convert to pixels. The path is Cua pixel-only XY background click with no AX or DOM target lookup.",
+        "description": "Click the bound window through the standalone VelaClick SkyLight backend using the visible 0..10 window-local ruler, then immediately return a fixed-640px post-click screenshot. Origin is top-left; x increases right and y increases down, so lower targets have larger y values. Use one decimal place and never convert to pixels. VelaClick is stateless and uses no AX/DOM lookup, socket, daemon, or click session.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -80,6 +80,21 @@ TOOLS = [
                 "count": {"type": "integer", "minimum": 1, "maximum": 2, "default": 1},
             },
             "required": ["x", "y"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "velacu_scroll",
+        "description": "Scroll the bound window at a specific visible 0..10 window-local point using VelaCU's native SkyLight wheel path. Use x/y to target the page or a nested scroll area. The physical cursor is not moved.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
+                "amount": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
+                "x": {"type": "number", "minimum": 0, "maximum": 10, "default": 5.0},
+                "y": {"type": "number", "minimum": 0, "maximum": 10, "default": 5.0},
+            },
+            "required": ["direction"],
             "additionalProperties": False,
         },
     },
@@ -105,7 +120,7 @@ TOOLS = [
     },
     {
         "name": "velacu_release",
-        "description": "Release VelaCU's private pixel-only Cua daemon and clear the bound window. The next velacu_bind starts a fresh private backend.",
+        "description": "Release VelaCU's bound window and visual pointer state. Call this when the control task is finished. Before release, close applications or windows that were opened only for this task; never close the user's pre-existing work windows just for cleanup. VelaClick itself is stateless and has no daemon or click session.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
 ]
@@ -148,7 +163,7 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             "pid": int(w["pid"]),
             "owner": w.get("owner", ""),
             "title": w.get("title", ""),
-            "click_backend": w.get("clickBackend", "cua-pixel-only"),
+            "click_backend": w.get("clickBackend", "velacu-native-pixel-only"),
             "bounds_points": [w.get("x"), w.get("y"), w.get("width"), w.get("height")],
             "backend_version": VELACU_VERSION,
             "backend_build": VELACU_BUILD,
@@ -217,6 +232,40 @@ def tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             "isError": False,
         }
 
+    if name == "velacu_scroll":
+        direction = args.get("direction")
+        if not isinstance(direction, str):
+            raise VelaCUError("scroll requires direction")
+        scroll_result = core.scroll(
+            direction=direction,
+            amount=int(args.get("amount", 3)),
+            x=float(args.get("x", 5.0)),
+            y=float(args.get("y", 5.0)),
+        )
+        time.sleep(0.10)
+        image, meta = core.capture(max_width=MODEL_CAPTURE_WIDTH)
+        w = meta["window"]
+        note = {
+            "scroll": scroll_result,
+            "post_scroll_capture": {
+                "coordinate_system": "0..10 normalized window-local; origin top-left; x right; y down",
+                "bound_window": {
+                    "window_id": int(w["windowID"]),
+                    "owner": w.get("owner", ""),
+                    "title": w.get("title", ""),
+                },
+                "backend_version": VELACU_VERSION,
+                "backend_build": VELACU_BUILD,
+            },
+        }
+        return {
+            "content": [
+                {"type": "text", "text": json.dumps(note, ensure_ascii=False, separators=(",", ":"))},
+                {"type": "image", "data": base64.b64encode(image).decode("ascii"), "mimeType": "image/png"},
+            ],
+            "isError": False,
+        }
+
     if name == "velacu_key":
         key = args.get("key")
         if not isinstance(key, str):
@@ -248,7 +297,7 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
                 "protocolVersion": requested or PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": True}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                "instructions": "VelaCU is a small visual window-control tool. Typical flow: velacu_list -> velacu_bind -> velacu_capture -> velacu_click/key/type -> inspect the returned screenshot -> repeat -> velacu_release. Capture width is fixed at 640px. For clicks, read the visible 0..10 ruler directly: origin top-left, x increases right, y increases down; targets near the bottom have y near 10. Use one decimal place only. Never calculate pixels, use AX/DOM, emit bash/osascript/System Events/clipboard input, or use an official Computer Use path.",
+                "instructions": "VelaCU is a small visual window-control tool. Typical flow: velacu_list -> velacu_bind -> velacu_capture -> velacu_click/scroll/key/type -> inspect the returned screenshot -> repeat -> cleanup -> velacu_release. Capture width is fixed at 640px. For clicks and targeted scroll, read the visible 0..10 ruler directly: origin top-left, x increases right, y increases down; use one decimal place only. When the requested control task is complete, close applications or windows opened only for that task, preserve the user's pre-existing work windows, then call velacu_release. Never calculate pixels, use AX/DOM, emit bash/osascript/System Events/clipboard input, or use an official Computer Use path.",
             },
         }
 

@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import AppKit
+import Darwin
 
 struct WindowInfo: Codable {
     let windowID: UInt32
@@ -39,6 +40,96 @@ struct KeyResult: Codable {
 struct TypeResult: Codable {
     let ok: Bool
     let characters: Int
+}
+
+struct ScrollResult: Codable {
+    let ok: Bool
+    let windowID: UInt32
+    let pid: Int32
+    let x: Double
+    let y: Double
+    let direction: String
+    let amount: Int
+    let globalX: Double
+    let globalY: Double
+}
+
+private typealias SLEventPostToPidFn = @convention(c) (pid_t, CGEvent) -> Void
+private typealias CGEventSetWindowLocationFn = @convention(c) (CGEvent, Double, Double) -> Void
+private typealias SLEventSetIntegerValueFieldFn = @convention(c) (CGEvent, UInt32, Int64) -> Void
+
+private final class VelaSkyLightMouse {
+    static let shared = VelaSkyLightMouse()
+
+    private let handle: UnsafeMutableRawPointer?
+    private let postToPidSPI: SLEventPostToPidFn?
+    private let setWindowLocationSPI: CGEventSetWindowLocationFn?
+    private let setIntegerFieldSPI: SLEventSetIntegerValueFieldFn?
+
+    private init() {
+        let path = "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight"
+        let loaded = dlopen(path, RTLD_LAZY | RTLD_GLOBAL)
+        handle = loaded
+
+        func load<T>(_ name: String, as type: T.Type) -> T? {
+            guard let loaded, let symbol = dlsym(loaded, name) else { return nil }
+            return unsafeBitCast(symbol, to: type)
+        }
+
+        postToPidSPI = load("SLEventPostToPid", as: SLEventPostToPidFn.self)
+        setWindowLocationSPI = load("CGEventSetWindowLocation", as: CGEventSetWindowLocationFn.self)
+        setIntegerFieldSPI = load("SLEventSetIntegerValueField", as: SLEventSetIntegerValueFieldFn.self)
+    }
+
+    var isAvailable: Bool {
+        postToPidSPI != nil && setWindowLocationSPI != nil && setIntegerFieldSPI != nil
+    }
+
+    func post(
+        _ event: CGEvent,
+        window: WindowInfo,
+        localPoint: CGPoint,
+        clickGroupID: Int64,
+        clickState: Int64,
+        buttonNumber: Int64,
+        subtype: Int64 = 3
+    ) -> Bool {
+        guard let postToPidSPI,
+              let setWindowLocationSPI,
+              let setIntegerFieldSPI else {
+            return false
+        }
+
+        setWindowLocationSPI(event, localPoint.x, localPoint.y)
+        setIntegerFieldSPI(event, 1, clickState)
+        setIntegerFieldSPI(event, 3, buttonNumber)
+        setIntegerFieldSPI(event, 7, subtype)
+        setIntegerFieldSPI(event, 40, Int64(window.pid))
+        setIntegerFieldSPI(event, 51, Int64(window.windowID))
+        setIntegerFieldSPI(event, 58, clickGroupID)
+        setIntegerFieldSPI(event, 91, Int64(window.windowID))
+        setIntegerFieldSPI(event, 92, Int64(window.windowID))
+
+        postToPidSPI(pid_t(window.pid), event)
+        event.postToPid(pid_t(window.pid))
+        return true
+    }
+
+    func postScroll(_ event: CGEvent, window: WindowInfo, localPoint: CGPoint) -> Bool {
+        guard let postToPidSPI,
+              let setWindowLocationSPI,
+              let setIntegerFieldSPI else {
+            return false
+        }
+        setWindowLocationSPI(event, localPoint.x, localPoint.y)
+        setIntegerFieldSPI(event, 40, Int64(window.pid))
+        setIntegerFieldSPI(event, 51, Int64(window.windowID))
+        setIntegerFieldSPI(event, 91, Int64(window.windowID))
+        setIntegerFieldSPI(event, 92, Int64(window.windowID))
+        postToPidSPI(pid_t(window.pid), event)
+        event.postToPid(pid_t(window.pid))
+        return true
+    }
 }
 
 func allWindows() -> [WindowInfo] {
@@ -213,28 +304,55 @@ func focusClick(window: WindowInfo, normalizedX: Double, normalizedY: Double) th
     ]
 }
 
-func postMouse(window: WindowInfo, normalizedX: Double, normalizedY: Double, buttonName: String, count: Int) throws {
+func postMouse(window: WindowInfo, normalizedX: Double, normalizedY: Double, buttonName: String, count: Int, windowWidth: Double? = nil, windowHeight: Double? = nil) throws {
     guard (0...10).contains(normalizedX), (0...10).contains(normalizedY) else {
         throw NSError(domain: "VelaCU", code: 2, userInfo: [NSLocalizedDescriptionKey: "x/y must be in 0...10"])
     }
 
+    let targetWidth = windowWidth ?? window.width
+    let targetHeight = windowHeight ?? window.height
+    let localPoint = CGPoint(
+        x: targetWidth * normalizedX / 10.0,
+        y: targetHeight * normalizedY / 10.0
+    )
     let point = CGPoint(
-        x: window.x + window.width * normalizedX / 10.0,
-        y: window.y + window.height * normalizedY / 10.0
+        x: window.x + localPoint.x,
+        y: window.y + localPoint.y
     )
 
-    let source = CGEventSource(stateID: .privateState)
+    guard let source = CGEventSource(stateID: .hidSystemState) else {
+        throw NSError(domain: "VelaCU", code: 35, userInfo: [NSLocalizedDescriptionKey: "Could not create HID mouse event source"])
+    }
     let isRight = buttonName.lowercased() == "right"
     let button: CGMouseButton = isRight ? .right : .left
+    let buttonNumber: Int64 = isRight ? 1 : 0
     let downType: CGEventType = isRight ? .rightMouseDown : .leftMouseDown
     let upType: CGEventType = isRight ? .rightMouseUp : .leftMouseUp
+    let clickCount = max(1, min(count, 3))
+    let baseGroup = (Int64(Date().timeIntervalSince1970 * 1_000_000) ^ Int64(getpid())) & Int64.max
 
-    if let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: button) {
-        tagTargetWindow(move, windowID: window.windowID, pid: window.pid)
-        move.postToPid(pid_t(window.pid))
+    func route(_ event: CGEvent, clickState: Int64, group: Int64, buttonNumber: Int64) {
+        if VelaSkyLightMouse.shared.post(
+            event,
+            window: window,
+            localPoint: localPoint,
+            clickGroupID: group,
+            clickState: clickState,
+            buttonNumber: buttonNumber
+        ) {
+            return
+        }
+        tagTargetWindow(event, windowID: window.windowID, pid: window.pid)
+        event.postToPid(pid_t(window.pid))
     }
 
-    let clickCount = max(1, min(count, 3))
+    // Prime AppKit/WebKit tracking at the target point before mouseDown. This is
+    // still a background event and does not move the physical cursor.
+    if let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: button) {
+        route(move, clickState: 0, group: baseGroup, buttonNumber: 0)
+        usleep(12_000)
+    }
+
     for i in 1...clickCount {
         guard
             let down = CGEvent(mouseEventSource: source, mouseType: downType, mouseCursorPosition: point, mouseButton: button),
@@ -243,15 +361,100 @@ func postMouse(window: WindowInfo, normalizedX: Double, normalizedY: Double, but
             throw NSError(domain: "VelaCU", code: 3, userInfo: [NSLocalizedDescriptionKey: "Could not create mouse event"])
         }
 
-        down.setIntegerValueField(.mouseEventClickState, value: Int64(i))
-        up.setIntegerValueField(.mouseEventClickState, value: Int64(i))
-        tagTargetWindow(down, windowID: window.windowID, pid: window.pid)
-        tagTargetWindow(up, windowID: window.windowID, pid: window.pid)
-        down.postToPid(pid_t(window.pid))
-        usleep(25_000)
-        up.postToPid(pid_t(window.pid))
+        let clickState = Int64(i)
+        let group = baseGroup + Int64(i)
+        route(down, clickState: clickState, group: group, buttonNumber: buttonNumber)
+        usleep(28_000)
+        route(up, clickState: clickState, group: group, buttonNumber: buttonNumber)
         usleep(45_000)
     }
+}
+
+func postScroll(window: WindowInfo, normalizedX: Double, normalizedY: Double, direction: String, amount: Int) throws -> ScrollResult {
+    guard (0...10).contains(normalizedX), (0...10).contains(normalizedY) else {
+        throw NSError(domain: "VelaCU", code: 36, userInfo: [NSLocalizedDescriptionKey: "x/y must be in 0...10"])
+    }
+    let localPoint = CGPoint(x: window.width * normalizedX / 10.0, y: window.height * normalizedY / 10.0)
+    let point = CGPoint(x: window.x + localPoint.x, y: window.y + localPoint.y)
+    guard let source = CGEventSource(stateID: .hidSystemState) else {
+        throw NSError(domain: "VelaCU", code: 37, userInfo: [NSLocalizedDescriptionKey: "Could not create HID scroll event source"])
+    }
+    let dir = direction.lowercased()
+    guard ["up", "down", "left", "right"].contains(dir) else {
+        throw NSError(domain: "VelaCU", code: 38, userInfo: [NSLocalizedDescriptionKey: "direction must be up, down, left, or right"])
+    }
+    let ticks = max(1, min(amount, 10))
+    let wheelY: Int32 = dir == "up" ? 3 : (dir == "down" ? -3 : 0)
+    let wheelX: Int32 = dir == "left" ? 3 : (dir == "right" ? -3 : 0)
+    let group = (Int64(Date().timeIntervalSince1970 * 1_000_000) ^ Int64(getpid())) & Int64.max
+
+    if let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left) {
+        if !VelaSkyLightMouse.shared.post(move, window: window, localPoint: localPoint, clickGroupID: group, clickState: 0, buttonNumber: 0) {
+            tagTargetWindow(move, windowID: window.windowID, pid: window.pid)
+            move.postToPid(pid_t(window.pid))
+        }
+        usleep(12_000)
+    }
+
+    for _ in 0..<ticks {
+        guard let event = CGEvent(scrollWheelEvent2Source: source, units: .line, wheelCount: 2, wheel1: wheelY, wheel2: wheelX, wheel3: 0) else {
+            throw NSError(domain: "VelaCU", code: 39, userInfo: [NSLocalizedDescriptionKey: "Could not create scroll event"])
+        }
+        event.location = point
+        if !VelaSkyLightMouse.shared.postScroll(event, window: window, localPoint: localPoint) {
+            tagTargetWindow(event, windowID: window.windowID, pid: window.pid)
+            event.postToPid(pid_t(window.pid))
+        }
+        usleep(30_000)
+    }
+
+    return ScrollResult(ok: true, windowID: window.windowID, pid: window.pid, x: normalizedX, y: normalizedY, direction: dir, amount: ticks, globalX: point.x, globalY: point.y)
+}
+
+// One stateless VelaCU click request. The caller supplies the binding snapshot
+// (window id, target pid and dimensions); this helper only refreshes the
+// WindowServer bounds needed for the screen origin, then posts PID-targeted
+// CGEvents. It never creates a session, opens a socket, or warps the physical
+// cursor. Keeping the whole down/up sequence in this one process invocation
+// makes the click atomic from VelaCU's point of view.
+func postAtomicClick(windowID: UInt32, pid: Int32, width: Double, height: Double, normalizedX: Double, normalizedY: Double, buttonName: String, count: Int) throws -> ClickResult {
+    guard width > 0, height > 0 else {
+        throw NSError(domain: "VelaCU", code: 30, userInfo: [NSLocalizedDescriptionKey: "window width and height must be positive"])
+    }
+    guard let window = windowByID(windowID) else {
+        throw NSError(domain: "VelaCU", code: 31, userInfo: [NSLocalizedDescriptionKey: "Bound window no longer exists"])
+    }
+    guard window.pid == pid else {
+        throw NSError(domain: "VelaCU", code: 32, userInfo: [NSLocalizedDescriptionKey: "Bound window pid changed; bind again"])
+    }
+    guard abs(window.width - width) < 1.0, abs(window.height - height) < 1.0 else {
+        throw NSError(domain: "VelaCU", code: 33, userInfo: [NSLocalizedDescriptionKey: "Bound window dimensions changed; bind again"])
+    }
+
+    let before = cursorPosition()
+    try postMouse(
+        window: window,
+        normalizedX: normalizedX,
+        normalizedY: normalizedY,
+        buttonName: buttonName,
+        count: count,
+        windowWidth: width,
+        windowHeight: height
+    )
+    let after = cursorPosition()
+    return ClickResult(
+        ok: true,
+        windowID: windowID,
+        pid: pid,
+        x: normalizedX,
+        y: normalizedY,
+        globalX: window.x + width * normalizedX / 10.0,
+        globalY: window.y + height * normalizedY / 10.0,
+        cursorBeforeX: before.x,
+        cursorBeforeY: before.y,
+        cursorAfterX: after.x,
+        cursorAfterY: after.y
+    )
 }
 
 let keyCodes: [String: CGKeyCode] = [
@@ -345,7 +548,7 @@ let args = CommandLine.arguments
 
 do {
     guard args.count >= 2 else {
-        throw NSError(domain: "VelaCU", code: 10, userInfo: [NSLocalizedDescriptionKey: "Usage: VelaCUHelper list|get|click|key|type|cursor"])
+        throw NSError(domain: "VelaCU", code: 10, userInfo: [NSLocalizedDescriptionKey: "Usage: VelaCUHelper list|get|click-atomic|scroll-atomic|key|type|cursor"])
     }
 
     switch args[1] {
@@ -387,6 +590,42 @@ do {
             cursorAfterX: after.x,
             cursorAfterY: after.y
         ))
+
+    case "click-atomic":
+        guard args.count >= 8,
+              let id = UInt32(args[2]),
+              let pid = Int32(args[3]),
+              let width = Double(args[4]),
+              let height = Double(args[5]),
+              let nx = Double(args[6]),
+              let ny = Double(args[7])
+        else {
+            throw NSError(domain: "VelaCU", code: 34, userInfo: [NSLocalizedDescriptionKey: "Usage: click-atomic WINDOW_ID PID WIDTH HEIGHT X Y [left|right] [count]"])
+        }
+        let button = args.count >= 9 ? args[8] : "left"
+        let count = args.count >= 10 ? (Int(args[9]) ?? 1) : 1
+        try emitJSON(postAtomicClick(
+            windowID: id,
+            pid: pid,
+            width: width,
+            height: height,
+            normalizedX: nx,
+            normalizedY: ny,
+            buttonName: button,
+            count: count
+        ))
+
+    case "scroll-atomic":
+        guard args.count >= 7,
+              let id = UInt32(args[2]),
+              let nx = Double(args[3]),
+              let ny = Double(args[4]),
+              let amount = Int(args[6]),
+              let window = windowByID(id)
+        else {
+            throw NSError(domain: "VelaCU", code: 40, userInfo: [NSLocalizedDescriptionKey: "Usage: scroll-atomic WINDOW_ID X Y DIRECTION AMOUNT"])
+        }
+        try emitJSON(postScroll(window: window, normalizedX: nx, normalizedY: ny, direction: args[5], amount: amount))
 
     case "key":
         guard args.count >= 4,

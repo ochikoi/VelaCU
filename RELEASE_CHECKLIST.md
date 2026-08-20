@@ -1,28 +1,18 @@
 # Release checklist
 
-This working copy is prepared as the first public VelaCU release candidate.
-
-Before the first public release:
+VelaCU v0.4.1 release preparation:
 
 - [x] Remove developer-specific absolute paths.
-- [x] Remove runtime screenshots, sockets, logs, and caches from the source package.
-- [x] Add project MIT license.
-- [x] Preserve Cua's MIT attribution and license text.
-- [x] Pin the Cua source revision used to build the modified driver.
-- [x] Make the modified Cua driver reproducible from a pinned upstream source revision.
-- [x] Rebuild the modified Cua driver from a clean upstream snapshot successfully.
-- [x] Add a one-command local installer and `velacu doctor`.
-- [x] Test the packaged macOS arm64 archive by installing it into a fresh temporary prefix.
-- [x] Add automatic Codex MCP configuration with config backup and rollback on setup failure.
-- [x] Keep generic MCP configuration available.
-- [x] Keep model-facing capture width fixed at 640px.
-- [x] Verify a fresh Codex session can use VelaCU without separate coordinate coaching.
-- [x] Verify pointer position does not shift between menu-bar animation and resting state.
-- [x] Configure the final GitHub owner/repository.
-- [x] Ship both the source archive and the prebuilt macOS arm64 archive for the first release.
+- [x] Remove runtime screenshots, sockets, logs, caches, and local archives from the source tree.
+- [x] Keep the public MIT license and third-party notices current.
+- [x] Replace the Cua click runtime with standalone VelaClick v0.3.0 SkyLight.
+- [x] Keep the installer/CLI and source/release packaging workflow.
+- [x] Add the eighth MCP tool, `velacu_scroll`, with post-scroll capture.
+- [x] Keep the System Settings RemoteView compatibility path.
+- [x] Include the verified pointer flicker, minimize, idle hover, and contrast fixes.
+- [x] Validate the source install path without Rust/cargo.
+- [x] Run build and compatible Python regression/contract tests.
 - [ ] Test/build an Intel/x86_64 package before claiming Intel support.
-- [ ] Record the short VelaCU dogfooding demo for the repository page.
-- [x] Publish the repository.
-- [x] Create the first GitHub release and attach the packaged archive + SHA-256 file.
+- [ ] Publish a GitHub release explicitly after the commit is pushed.
 
-Do not publish automatically from this directory; final publication should be an explicit user action.
+Do not publish a GitHub release or tag automatically from this directory.

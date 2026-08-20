@@ -3,11 +3,9 @@ from __future__ import annotations
 
 import io
 import atexit
-import fcntl
 import json
 import os
-import signal
-import socket
+import select
 import subprocess
 import sys
 import tempfile
@@ -21,14 +19,16 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parent
 HELPER = ROOT / "bin" / "VelaCUHelper"
+VELACLICK = ROOT / "bin" / "VelaClick"
 SCREENCAPTURE = Path("/usr/sbin/screencapture")
 RUNTIME = ROOT / "runtime"
 RUNTIME.mkdir(exist_ok=True)
-CUA_DRIVER = ROOT / "bin" / "velacu-cua-driver"
+POINTER_HELPER = ROOT / "bin" / "VelaPointer"
+DEFAULT_POINTER_IMAGE = ROOT / "resources" / "VelaCUPointer.png"
 STATUS_PUBLISHER = ROOT / "status_publisher.py"
 STATUS_COMMANDS = RUNTIME / "status" / "commands"
-VELACU_VERSION = "0.3.0"
-VELACU_BUILD = "stable-20260818-01"
+VELACU_VERSION = "0.4.1"
+VELACU_BUILD = "native-20260820-04"
 MODEL_CAPTURE_WIDTH = 640
 
 
@@ -36,191 +36,44 @@ class VelaCUError(RuntimeError):
     pass
 
 
-class CuaClickBridge:
-    """Persistent pixel-only Cua executor on a private Unix socket.
-
-    The binary and socket path are owned by VelaCU,
-    so calls can never fall through to an installed/official Cua daemon.
-    """
+class VelaPointerBridge:
+    """Independent click-through cursor layer pinned at target window z + 1."""
 
     def __init__(self) -> None:
-        self.socket = RUNTIME / f"velacu-cua-{os.getpid()}.sock"
-        self.start_lock = RUNTIME / "velacu-cua.lock"
-        self.log_path = RUNTIME / f"velacu-cua-{os.getpid()}.log"
-        self.daemon: subprocess.Popen[bytes] | None = None
-        self._daemon_owned = False
+        self.proc: subprocess.Popen[bytes] | None = None
         self._log_handle = None
-        self.conn: socket.socket | None = None
-        self.reader = None
-        self._preflight_done = False
+        self._lock = threading.Lock()
+        self.log_path = RUNTIME / f"velapointer-{os.getpid()}.log"
         atexit.register(self.close)
 
-    def _ensure_host_post_event_access(self) -> None:
-        def probe(command: str) -> bool:
-            proc = subprocess.run(
-                [str(HELPER), command],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=5.0,
-                check=False,
-            )
-            if proc.returncode != 0:
-                detail = proc.stderr.strip() or proc.stdout.strip() or f"helper exit {proc.returncode}"
-                raise VelaCUError(f"VelaCU host permission probe failed: {detail}")
+    def _image_path(self) -> Path:
+        configured = os.environ.get("VELACU_POINTER_IMAGE", "").strip()
+        return Path(configured).expanduser() if configured else DEFAULT_POINTER_IMAGE
+
+    def _stop_process(self) -> None:
+        proc = self.proc
+        self.proc = None
+        if proc is not None:
             try:
-                payload = json.loads(proc.stdout)
-            except json.JSONDecodeError as exc:
-                raise VelaCUError(f"VelaCU host permission probe returned invalid JSON: {proc.stdout[:200]!r}") from exc
-            return bool(payload.get("postEventAccess"))
-
-        if probe("permissions"):
-            return
-        if probe("request-post-access"):
-            return
-        raise VelaCUError(
-            "VelaCU host lacks macOS Accessibility/Post Event access. "
-            "Enable the VelaCU tunnel host in System Settings > Privacy & Security > Accessibility, then bind again."
-        )
-
-    def preflight(self) -> None:
-        if self._preflight_done and self._socket_is_live():
-            return
-        if not CUA_DRIVER.exists():
-            raise VelaCUError(f"Cua Driver is not installed at {CUA_DRIVER}")
-        self._ensure_host_post_event_access()
-        tools = subprocess.run(
-            [str(CUA_DRIVER), "list-tools"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=3.0,
-            check=False,
-        )
-        if tools.returncode != 0 or "click: Pure XY background click" not in tools.stdout:
-            raise VelaCUError("VelaCU pixel-only Cua backend failed tool-surface preflight")
-        self._start_daemon()
-        self._preflight_done = True
-
-    def _start_daemon(self) -> None:
-        # Multiple standalone MCP server processes can overlap while an old
-        # one is still draining.  Never unlink a live socket: doing so strands
-        # the old daemon and starts another daemon on the same pathname, which
-        # was the source of the observed Connection refused/duplicate process
-        # failures.
-        RUNTIME.mkdir(exist_ok=True)
-        with self.start_lock.open("a+") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                if self._socket_is_live():
-                    self._daemon_owned = False
-                    return
-                self._stop_daemon()
-                try:
-                    self.socket.unlink()
-                except FileNotFoundError:
-                    pass
-                env = os.environ.copy()
-                env["HOME"] = str(Path.home())
-                # VelaCU embeds Cua as a private child of the tunnel-hosted MCP.
-                # Embedded mode preserves the stable host's macOS TCC identity and
-                # avoids a second responsibility re-exec that would detach the
-                # private Unix-socket lifecycle.
-                env["CUA_DRIVER_EMBEDDED"] = "1"
-                env["CUA_DRIVER_HOST_BUNDLE_ID"] = "io.openai.tunnel.velacu"
-                self._log_handle = self.log_path.open("ab")
-                self.daemon = subprocess.Popen(
-                    [str(CUA_DRIVER), "serve", "--socket", str(self.socket), "--no-permissions-gate"],
-                    stdin=subprocess.DEVNULL,
-                    stdout=self._log_handle,
-                    stderr=self._log_handle,
-                    env=env,
-                    start_new_session=True,
-                )
-                self._daemon_owned = True
-                for _ in range(100):
-                    if self.daemon.poll() is not None:
-                        break
-                    if self._socket_is_live():
-                        return
-                    time.sleep(0.03)
-                detail = ""
-                try:
-                    detail = self.log_path.read_text(encoding="utf-8", errors="replace")[-1000:]
-                except OSError:
-                    pass
-                raise VelaCUError(
-                    "VelaCU private Cua daemon failed to create a live socket"
-                    + (f": {detail.strip()}" if detail.strip() else "")
-                )
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-
-    def _socket_is_live(self, timeout: float = 0.2) -> bool:
-        if not self.socket.exists():
-            return False
-        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            probe.settimeout(timeout)
-            probe.connect(str(self.socket))
-            # Complete the daemon's read-only list request. A connect-and-close
-            # probe is accepted by the kernel but makes Cua log a peer-
-            # credential rejection, and it does not prove the protocol is live.
-            probe.sendall(b'{"method":"list"}\n')
-            return bool(probe.recv(4096))
-        except OSError:
-            return False
-        finally:
-            probe.close()
-
-    def _close_connection(self) -> None:
-        reader = self.reader
-        self.reader = None
-        if reader is not None:
-            try:
-                reader.close()
-            except Exception:
-                pass
-        conn = self.conn
-        self.conn = None
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-    def _stop_daemon(self) -> None:
-        self._close_connection()
-        proc = self.daemon
-        self.daemon = None
-        owned = self._daemon_owned
-        self._daemon_owned = False
-        if owned and proc is not None:
-            # `cua-driver serve` owns a supervisor plus a worker.  Popen's
-            # terminate() only reaches the supervisor, leaving the worker
-            # listening on the private socket after release.  The child is in
-            # the new session/process group created above, so terminate the
-            # whole group even if the supervisor has already exited.
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
+                if proc.stdin is not None:
+                    proc.stdin.close()
+            except OSError:
                 pass
             try:
-                proc.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
+                if proc.stdout is not None:
+                    proc.stdout.close()
+            except OSError:
+                pass
+            if proc.poll() is None:
                 try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
-                try:
-                    proc.wait(timeout=1.0)
+                    proc.terminate()
+                    proc.wait(timeout=0.5)
                 except subprocess.TimeoutExpired:
-                    pass
-        if owned:
-            try:
-                self.socket.unlink()
-            except FileNotFoundError:
-                pass
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        pass
         handle = self._log_handle
         self._log_handle = None
         if handle is not None:
@@ -229,91 +82,117 @@ class CuaClickBridge:
             except OSError:
                 pass
 
-    def _connect(self, timeout: float = 3.0) -> None:
-        self.preflight()
-        if self.conn is not None and self.reader is not None:
-            return
-        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        conn.settimeout(timeout)
-        conn.connect(str(self.socket))
-        self.conn = conn
-        self.reader = conn.makefile("rb")
+    def _ensure(self) -> bool:
+        if (
+            self.proc is not None
+            and self.proc.poll() is None
+            and self.proc.stdin is not None
+            and self.proc.stdout is not None
+        ):
+            return True
+        self._stop_process()
+        image = self._image_path()
+        if not POINTER_HELPER.exists() or not image.exists():
+            return False
+        try:
+            self._log_handle = self.log_path.open("ab")
+            self.proc = subprocess.Popen(
+                [str(POINTER_HELPER), str(image)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=self._log_handle,
+                start_new_session=True,
+            )
+            return self.proc.stdin is not None and self.proc.stdout is not None
+        except OSError:
+            self._stop_process()
+            return False
 
-    def _raw_request(self, request: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
-        last_error: Exception | None = None
-        for attempt in range(2):
+    def _send(self, payload: dict[str, Any]) -> bool:
+        wire = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8") + b"\n"
+        with self._lock:
+            for _ in range(2):
+                if not self._ensure():
+                    return False
+                assert self.proc is not None and self.proc.stdin is not None
+                try:
+                    self.proc.stdin.write(wire)
+                    self.proc.stdin.flush()
+                    return True
+                except (BrokenPipeError, OSError):
+                    self._stop_process()
+            return False
+
+    def move(self, window: dict[str, Any], x: float, y: float) -> bool:
+        screen_x = float(window.get("x", 0.0)) + float(window["width"]) * x / 10.0
+        screen_y = float(window.get("y", 0.0)) + float(window["height"]) * y / 10.0
+        request_id = uuid.uuid4().hex
+        payload = {
+            "action": "move",
+            "window_id": int(window["windowID"]),
+            "screen_x": screen_x,
+            "screen_y": screen_y,
+            "local_x": float(window["width"]) * x / 10.0,
+            "local_y": float(window["height"]) * y / 10.0,
+            "pulse": False,
+            "request_id": request_id,
+        }
+        wire = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8") + b"\n"
+
+        with self._lock:
+            if not self._ensure():
+                return False
+            assert self.proc is not None and self.proc.stdin is not None and self.proc.stdout is not None
             try:
-                self._connect(timeout=timeout)
-                assert self.conn is not None and self.reader is not None
-                self.conn.settimeout(timeout)
-                wire = json.dumps(request, separators=(",", ":"), ensure_ascii=False).encode("utf-8") + b"\n"
-                self.conn.sendall(wire)
-                line = self.reader.readline()
-                if not line:
-                    raise VelaCUError("Cua private socket closed without a response")
-                response = json.loads(line.decode("utf-8"))
-                if not response.get("ok"):
-                    raise VelaCUError(str(response.get("error") or response))
-                return response.get("result") or {}
-            except Exception as exc:
-                last_error = exc
-                self._close_connection()
-                if attempt == 0:
-                    self._preflight_done = False
-                    self._start_daemon()
-                    self._preflight_done = True
-                    continue
-                break
-        raise VelaCUError(f"Cua private-socket request failed: {last_error}")
+                self.proc.stdin.write(wire)
+                self.proc.stdin.flush()
+            except (BrokenPipeError, OSError):
+                self._stop_process()
+                return False
 
-    def _call(self, tool: str, payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
-        result = self._raw_request({"method": "call", "name": tool, "args": payload}, timeout=timeout)
-        structured = result.get("structuredContent") if isinstance(result, dict) else None
-        if isinstance(structured, dict):
-            if structured.get("code") in {"action_outcome_mismatch", "typed_output_mismatch"}:
-                raise VelaCUError(f"Cua Driver contract failure: {structured}")
-            return structured
-        if isinstance(result, dict):
-            return result
-        raise VelaCUError(f"Unexpected Cua result: {result!r}")
+            deadline = time.monotonic() + 0.75
+            while time.monotonic() < deadline:
+                remaining = max(0.0, deadline - time.monotonic())
+                try:
+                    ready, _, _ = select.select([self.proc.stdout], [], [], remaining)
+                except (OSError, ValueError):
+                    self._stop_process()
+                    return False
+                if not ready:
+                    break
+                line = self.proc.stdout.readline()
+                if not line:
+                    self._stop_process()
+                    return False
+                try:
+                    response = json.loads(line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if response.get("event") == "arrived" and response.get("request_id") == request_id:
+                    return True
+
+            # A visual cursor that cannot confirm arrival must not remain on screen
+            # while the real click proceeds at a different point. Drop only the
+            # cosmetic Pointer process; the click executor remains independent.
+            self._stop_process()
+            return False
+
+    def pulse(self) -> bool:
+        return self._send({"action": "pulse"})
+
+    def hide(self) -> None:
+        with self._lock:
+            if self.proc is None or self.proc.poll() is not None or self.proc.stdin is None:
+                return
+            try:
+                self.proc.stdin.write(b'{"action":"hide"}\n')
+                self.proc.stdin.flush()
+            except (BrokenPipeError, OSError):
+                self._stop_process()
 
     def close(self) -> None:
-        self._preflight_done = False
-        self._stop_daemon()
-
-    def click(self, *, pid: int, window_id: int, window_width: float, window_height: float,
-              x: float, y: float, button: str = "left", count: int = 1) -> dict[str, Any]:
-        if button != "left":
-            raise VelaCUError("VelaCU pixel-only backend currently supports left click only")
-        local_x = float(window_width) * x / 10.0
-        local_y = float(window_height) * y / 10.0
-        result = self._call("click", {
-            "pid": int(pid),
-            "window_id": int(window_id),
-            "x": local_x,
-            "y": local_y,
-            "count": int(count),
-        })
-        # This bridge calls only the dedicated VelaCU XY click tool. The public
-        # Cua projection intentionally keeps its legacy synthetic_events route
-        # and may omit the tool's private `mode`, so normalize at this adapter
-        # boundary and retain the raw route for audit.
-        result = dict(result)
-        result["cua_public_route"] = result.get("route")
-        result["route"] = "skylight_cgevent_xy"
-        result["ax_used"] = False
-        result["physical_cursor_moved"] = False
-        result["virtual_cursor_visible"] = bool(result.get("agent_cursor_visible", True))
-        result.update({
-            "mode": "cua-pixel-only",
-            "normalizedX": x,
-            "normalizedY": y,
-            "windowLocalX": local_x,
-            "windowLocalY": local_y,
-            "windowWidth": float(window_width),
-            "windowHeight": float(window_height),
-        })
-        return result
+        with self._lock:
+            self._stop_process()
 
 
 def _run_json(args: list[str], timeout: float = 3.0) -> Any:
@@ -331,6 +210,23 @@ def _run_json(args: list[str], timeout: float = 3.0) -> Any:
         return json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         raise VelaCUError(f"Bad helper JSON: {proc.stdout[:200]!r}") from exc
+
+
+def _run_velaclick(args: list[str], timeout: float = 3.0) -> Any:
+    proc = subprocess.run(
+        [str(VELACLICK), *args],
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+    if proc.returncode != 0:
+        msg = proc.stderr.strip() or proc.stdout.strip() or f"VelaClick exit {proc.returncode}"
+        raise VelaCUError(msg)
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise VelaCUError(f"Bad VelaClick JSON: {proc.stdout[:200]!r}") from exc
 
 
 def list_windows() -> list[dict[str, Any]]:
@@ -516,11 +412,12 @@ def add_ruler(raw_png: bytes, max_width: int = 640, margin: int = 38) -> tuple[b
 
 class VelaCUCore:
     def __init__(self) -> None:
+        self._lifecycle_lock = threading.RLock()
         self.bound_window_id: int | None = None
         self.bound_app: str | None = None
         self.bound_size: tuple[float, float] | None = None
         self.latest_raw_size: tuple[int, int] | None = None
-        self.cua = CuaClickBridge()
+        self.pointer = VelaPointerBridge()
         self.session_id = f"{os.getpid()}-{uuid.uuid4().hex[:12]}"
         self.server_id = f"velacu-{self.session_id}"
         self._status_active = False
@@ -558,6 +455,7 @@ class VelaCUCore:
                 "server_pid": os.getpid(),
                 "server_id": self.server_id,
                 "target_pid": int(window["pid"]),
+                "window_id": int(window["windowID"]),
                 "bundle_id": str(window.get("bundleID") or ""),
                 "bundle_path": str(window.get("bundlePath") or ""),
                 "owner": str(window.get("owner") or ""),
@@ -591,25 +489,36 @@ class VelaCUCore:
         self._publish_release()
 
     def bind(self, query: str | None = None, window_id: int | None = None) -> dict[str, Any]:
+        with self._lifecycle_lock:
+            return self._bind_locked(query=query, window_id=window_id)
+
+    def _bind_locked(self, query: str | None = None, window_id: int | None = None) -> dict[str, Any]:
         window = choose_window(query=query, window_id=window_id)
         app = str(window.get("bundlePath") or window.get("bundleID") or window.get("owner") or "").strip()
         if not app:
             raise VelaCUError("Could not resolve an app identifier for the selected window")
         same_window = self.bound_window_id == int(window["windowID"]) and self.bound_app == app
+        if not same_window:
+            self.pointer.hide()
         self.bound_window_id = int(window["windowID"])
         self.bound_app = app
         self.bound_size = (float(window["width"]), float(window["height"]))
-        window["clickBackend"] = "cua-pixel-only"
+        window["clickBackend"] = "VelaClick-0.3.0-SkyLight"
         window["reusedBinding"] = same_window
         self._publish_active(window)
         return window
 
     def bound(self) -> dict[str, Any]:
+        with self._lifecycle_lock:
+            return self._bound_locked()
+
+    def _bound_locked(self) -> dict[str, Any]:
         if self.bound_window_id is None:
             raise VelaCUError("No VelaCU window is bound")
         try:
             return get_window(self.bound_window_id)
         except VelaCUError:
+            self.pointer.hide()
             self.bound_window_id = None
             self.bound_app = None
             self.bound_size = None
@@ -617,47 +526,55 @@ class VelaCUCore:
             raise VelaCUError("The bound window no longer exists. Bind again.")
 
     def capture(self, max_width: int = 640) -> tuple[bytes, dict[str, Any]]:
-        window = self.bound()
-        raw = capture_window_png(int(window["windowID"]))
-        ruled, meta = add_ruler(raw, max_width=max_width)
-        self.latest_raw_size = (int(meta["raw_width"]), int(meta["raw_height"]))
-        latest = RUNTIME / "latest_ruled.png"
-        latest.write_bytes(ruled)
-        return ruled, {"window": window, **meta, "latest": str(latest)}
+        with self._lifecycle_lock:
+            window = self._bound_locked()
+            raw = capture_window_png(int(window["windowID"]))
+            ruled, meta = add_ruler(raw, max_width=max_width)
+            self.latest_raw_size = (int(meta["raw_width"]), int(meta["raw_height"]))
+            latest = RUNTIME / "latest_ruled.png"
+            latest.write_bytes(ruled)
+            return ruled, {"window": window, **meta, "latest": str(latest)}
 
     def click(self, x: float, y: float, button: str = "left", count: int = 1) -> dict[str, Any]:
-        window = self.bound()
-        x = round(float(x), 1)
-        y = round(float(y), 1)
-        if not (0.0 <= x <= 10.0 and 0.0 <= y <= 10.0):
-            raise VelaCUError("x and y must both be in the inclusive range 0..10")
-        if button not in {"left", "right", "middle"}:
-            raise VelaCUError("button must be left, right, or middle")
-        count = max(1, min(int(count), 4))
-        self.bound_size = (float(window["width"]), float(window["height"]))
+        with self._lifecycle_lock:
+            window = self._bound_locked()
+            x = round(float(x), 1)
+            y = round(float(y), 1)
+            if not (0.0 <= x <= 10.0 and 0.0 <= y <= 10.0):
+                raise VelaCUError("x and y must both be in the inclusive range 0..10")
+            if button not in {"left", "right", "middle"}:
+                raise VelaCUError("button must be left, right, or middle")
+            count = max(1, min(int(count), 4))
+            self.bound_size = (float(window["width"]), float(window["height"]))
+            pointer_visible = self.pointer.move(window, x, y)
+            if pointer_visible:
+            # Purely cosmetic click pulse: movement arrival gates the real click,
+            # but the bounce does not depend on click delivery or click success.
+                self.pointer.pulse()
 
         # System Settings hosts many right-hand panes in a same-frame app-extension
         # RemoteView. PID-targeted background CGEvents reach the host/sidebar but
         # not the embedded pane. For that one topology, use an untargeted HID hit
         # test while briefly activating/restoring the host; coordinates stay exactly
         # the same 0..10 window-local values and no AX/DOM lookup is involved.
-        if button == "left" and count == 1 and has_system_settings_remote_view(window):
-            permission = _run_json(["permissions"], timeout=3.0)
-            if not bool(permission.get("postEventAccess")):
-                raise VelaCUError("VelaCU host lacks CGPostEvent access for RemoteView click")
-            result = _run_json(
-                ["remoteview-click", str(int(window["windowID"])), f"{x:.1f}", f"{y:.1f}"],
-                timeout=5.0,
-            )
-            return {
+            if button == "left" and count == 1 and has_system_settings_remote_view(window):
+                permission = _run_json(["permissions"], timeout=3.0)
+                if not bool(permission.get("postEventAccess")):
+                    raise VelaCUError("VelaCU host lacks CGPostEvent access for RemoteView click")
+                result = _run_json(
+                    ["remoteview-click", str(int(window["windowID"])), f"{x:.1f}", f"{y:.1f}"],
+                    timeout=5.0,
+                )
+                return {
                 "delivery": {"mode": "foreground-transient"},
                 "effect": "unverifiable",
                 "route": "global_hid_remoteview",
-                "cua_public_route": None,
                 "ax_used": False,
                 "physical_cursor_moved": False,
-                "virtual_cursor_visible": False,
+                "virtual_cursor_visible": pointer_visible,
                 "mode": "remoteview-pixel-only",
+                "atomic": True,
+                "session_state": False,
                 "normalizedX": x,
                 "normalizedY": y,
                 "windowLocalX": float(window["width"]) * x / 10.0,
@@ -668,39 +585,94 @@ class VelaCUCore:
                 "cursorBeforeY": result.get("beforeY"),
                 "cursorAfterX": result.get("afterX"),
                 "cursorAfterY": result.get("afterY"),
-            }
+                }
 
-        self.cua.preflight()
-        return self.cua.click(
-            pid=int(window["pid"]),
-            window_id=int(window["windowID"]),
-            window_width=float(window["width"]),
-            window_height=float(window["height"]),
-            x=x,
-            y=y,
-            button=button,
-            count=count,
-        )
+            local_x = float(window["width"]) * x / 10.0
+            local_y = float(window["height"]) * y / 10.0
+            screen_x = float(window["x"]) + local_x
+            screen_y = float(window["y"]) + local_y
+            result: dict[str, Any] = {}
+            for index in range(count):
+                result = dict(_run_velaclick(
+                    [
+                        "click",
+                        button,
+                        str(int(window["pid"])),
+                        str(int(window["windowID"])),
+                        f"{screen_x:.3f}",
+                        f"{screen_y:.3f}",
+                        f"{local_x:.3f}",
+                        f"{local_y:.3f}",
+                    ],
+                    timeout=5.0,
+                ))
+                if index + 1 < count:
+                    time.sleep(0.045)
+            result.update({
+                "route": "velaclick_skylight_xy",
+                "ax_used": False,
+                "physical_cursor_moved": False,
+                "virtual_cursor_visible": pointer_visible,
+                "mode": "velacu-native-pixel-only",
+                "atomic": True,
+                "session_state": False,
+                "normalizedX": x,
+                "normalizedY": y,
+                "windowLocalX": local_x,
+                "windowLocalY": local_y,
+                "windowWidth": float(window["width"]),
+                "windowHeight": float(window["height"]),
+            })
+            return result
+
+    def scroll(self, direction: str, amount: int = 3, x: float = 5.0, y: float = 5.0) -> dict[str, Any]:
+        with self._lifecycle_lock:
+            window = self._bound_locked()
+            x = round(float(x), 1)
+            y = round(float(y), 1)
+            if not (0.0 <= x <= 10.0 and 0.0 <= y <= 10.0):
+                raise VelaCUError("x and y must both be in the inclusive range 0..10")
+            direction = str(direction).lower()
+            if direction not in {"up", "down", "left", "right"}:
+                raise VelaCUError("direction must be up, down, left, or right")
+            amount = max(1, min(int(amount), 10))
+            pointer_visible = self.pointer.move(window, x, y)
+            result = _run_json(
+                ["scroll-atomic", str(int(window["windowID"])), f"{x:.1f}", f"{y:.1f}", direction, str(amount)],
+                timeout=5.0,
+            )
+            result = dict(result)
+            result.update({
+                "route": "velacu_native_skylight_scroll",
+                "ax_used": False,
+                "physical_cursor_moved": False,
+                "virtual_cursor_visible": pointer_visible,
+                "session_state": False,
+            })
+            return result
 
     def key(self, key: str) -> dict[str, Any]:
-        window = self.bound()
-        if not isinstance(key, str) or not key.strip():
-            raise VelaCUError("key must be a non-empty string")
-        result = _run_json(["key", str(int(window["windowID"])), key], timeout=3.0)
-        return {"ok": bool(result.get("ok", True)), "key": key}
+        with self._lifecycle_lock:
+            window = self._bound_locked()
+            if not isinstance(key, str) or not key.strip():
+                raise VelaCUError("key must be a non-empty string")
+            result = _run_json(["key", str(int(window["windowID"])), key], timeout=3.0)
+            return {"ok": bool(result.get("ok", True)), "key": key}
 
     def type_text(self, text: str) -> dict[str, Any]:
-        window = self.bound()
-        if not isinstance(text, str):
-            raise VelaCUError("text must be a string")
-        result = _run_json(["type", str(int(window["windowID"])), text], timeout=max(3.0, min(30.0, 0.25 + len(text) * 0.05)))
-        return {"ok": bool(result.get("ok", True)), "characters": int(result.get("characters", len(text)))}
+        with self._lifecycle_lock:
+            window = self._bound_locked()
+            if not isinstance(text, str):
+                raise VelaCUError("text must be a string")
+            result = _run_json(["type", str(int(window["windowID"])), text], timeout=max(3.0, min(30.0, 0.25 + len(text) * 0.05)))
+            return {"ok": bool(result.get("ok", True)), "characters": int(result.get("characters", len(text)))}
 
     def release(self) -> dict[str, Any]:
-        self.cua.close()
-        self.bound_window_id = None
-        self.bound_app = None
-        self.bound_size = None
-        self.latest_raw_size = None
-        self._publish_release()
-        return {"released": True, "backend": "cua-pixel-only"}
+        with self._lifecycle_lock:
+            self.pointer.close()
+            self.bound_window_id = None
+            self.bound_app = None
+            self.bound_size = None
+            self.latest_raw_size = None
+            self._publish_release()
+            return {"released": True, "backend": "velacu-native-pixel-only", "session_state": False}
