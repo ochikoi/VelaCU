@@ -1,3 +1,14 @@
+> [!IMPORTANT]
+> **旧版本说明 / Legacy notice**
+>
+> VelaCU 是较早期的视觉 Computer Use 实现，交互效果和可靠性有限，无法像 VelaMux 一样实现完全后台控制，也不能保证 Agent 操作与用户前台操作完全隔离。
+>
+> 如果你需要实际使用，请优先选择 [VelaMux](https://github.com/ochikoi/VelaMux-macOS)。VelaCU 更适合作为源码参考、研究或二次修改用途。
+>
+> VelaCU is an earlier visual Computer Use implementation. Its interaction quality and reliability are limited, and it cannot provide VelaMux-style complete background control or fully isolate agent activity from the user's foreground work.
+>
+> For practical use, prefer [VelaMux](https://github.com/ochikoi/VelaMux-macOS). Use VelaCU mainly for source-code reference, research, or modification.
+
 # VelaCU
 
 VelaCU is a small macOS visual Computer Use MCP server. It gives an MCP-capable agent a screenshot of one window, a visible 0..10 ruler, and native keyboard/pointer controls without taking over the user's physical mouse.
